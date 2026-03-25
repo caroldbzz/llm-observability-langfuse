@@ -1,27 +1,47 @@
 import json
-from aula5_3 import run_monitoring_analysis
+
+try:
+    from aula5_3 import run_monitoring_analysis
+except ModuleNotFoundError:
+    from docs.aula5_3 import run_monitoring_analysis
+
+
+def calculate_avg_score(results: list[dict]):
+    score_values = [
+        item.get("judge_score_value")
+        for item in results
+        if item.get("judge_score_value") is not None
+    ]
+    if not score_values:
+        return None
+    return round(sum(score_values) / len(score_values), 2)
 
 
 def run_final_demo():
     result = run_monitoring_analysis()
     summary = result["summary"]
+    results = result["results"]
 
     print("\n=== RESUMO FINAL ===\n")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 
     print("\n=== INTERPRETAÇÃO ===\n")
 
-    avg_score = summary.get("avg_score")
+    avg_score = calculate_avg_score(results)
     num_examples = summary.get("num_examples")
     num_critical = summary.get("num_critical_cases")
+    num_review = summary.get("num_review_cases")
     avg_latency = summary.get("avg_latency_ms")
-    num_fallback = summary.get("num_fallback_applied")
+    total_input_tokens = summary.get("total_input_tokens")
+    total_output_tokens = summary.get("total_output_tokens")
 
     print(f"- Score médio: {avg_score}")
     print(f"- Total de exemplos: {num_examples}")
+    print(f"- Casos para revisão: {num_review}")
     print(f"- Casos críticos: {num_critical}")
     print(f"- Latência média (ms): {avg_latency}")
-    print(f"- Fallback aplicado: {num_fallback} vez(es)")
+    print(f"- Tokens de entrada: {total_input_tokens}")
+    print(f"- Tokens de saída: {total_output_tokens}")
 
     if avg_score is not None and avg_score < 3:
         print("\nAtenção: a qualidade média está baixa e indica necessidade de revisão do sistema.")
@@ -33,15 +53,12 @@ def run_final_demo():
     else:
         print("Nenhum caso crítico foi identificado neste conjunto analisado.")
 
-    if num_fallback and num_fallback > 0:
-        print("O fallback foi acionado em parte dos casos, o que indica que a mitigação automática está atuando, mas também sinaliza oportunidades de melhoria no prompt principal.")
+    top_categories = summary.get("category_summary", [])[:3]
 
-    worst_categories = summary.get("category_summary", [])[:3]
-
-    if worst_categories:
-        print("\nCategorias com pior desempenho:")
-        for cat in worst_categories:
-            print(f"- {cat['category']} (score médio: {cat['avg_score']})")
+    if top_categories:
+        print("\nCategorias mais frequentes no lote:")
+        for cat in top_categories:
+            print(f"- {cat['category']} ({cat['count']} caso(s))")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
-# AULA 5.2 
+import re
 import time
+
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -11,43 +12,35 @@ load_dotenv()
 langfuse = get_client()
 
 OPENAI_MODEL = "gpt-4o-mini"
-JUDGE_MODEL = "gpt-4o-mini"
+JUDGE_MODEL = "gpt-4.1-mini"
 
-DATASET_PATH = "../data/bitext_customer_support.csv"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
 ANSWER_PROMPT_NAME = "customer_support_assistant"
 ANSWER_PROMPT_LABEL = "production"
-JUDGE_PROMPT_PATH = "./prompts/customer_support_judge.md"
+JUDGE_PROMPT_PATH = "docs/prompts/customer_support_judge.md"
+CRITICAL_SCORE_THRESHOLD = 2
 
 N_EXAMPLES = 5
 
 
 def load_prompt(path: str) -> str:
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
+    with open(path, "r", encoding="utf-8") as file:
+        return file.read()
 
 
-def build_judge_input(question: str, expected_answer: str, model_answer: str) -> str:
-    return (
-        f"Pergunta:\n{question}\n\n"
-        f"Resposta esperada:\n{expected_answer}\n\n"
-        f"Resposta gerada:\n{model_answer}"
-    )
+def extract_judge_score(judge_output: str):
+    match = re.search(r"SCORE:\s*([1-5])", judge_output)
+    return int(match.group(1)) if match else None
 
 
-def summarize_monitoring_results(results: list[dict]) -> dict:
-    latencies = [r["latency_ms"] for r in results]
-
-    return {
-        "num_examples": len(results),
-        "avg_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else None,
-        "judge_answers_preview": [
-            {
-                "question": r["question"],
-                "judge_score": r["judge_score"],
-            }
-            for r in results[:3]
-        ],
-    }
+def calculate_severity(score_value):
+    if score_value is None:
+        return "review"
+    if score_value <= CRITICAL_SCORE_THRESHOLD:
+        return "critical"
+    if score_value == 3:
+        return "review"
+    return "ok"
 
 
 def run_monitoring_quality():
@@ -55,7 +48,6 @@ def run_monitoring_quality():
         as_type="span",
         name="monitoring-quality-batch",
     ) as root_span:
-
         with propagate_attributes(session_id="monitoring-session-002"):
             root_span.update(
                 user_id="demo-user-alura",
@@ -73,7 +65,6 @@ def run_monitoring_quality():
                 as_type="span",
                 name="load-application-prompt",
             ) as answer_prompt_span:
-
                 answer_prompt = langfuse.get_prompt(
                     name=ANSWER_PROMPT_NAME,
                     label=ANSWER_PROMPT_LABEL,
@@ -90,9 +81,7 @@ def run_monitoring_quality():
                 as_type="span",
                 name="load-judge-prompt-local",
             ) as judge_prompt_span:
-
                 judge_prompt_template = load_prompt(JUDGE_PROMPT_PATH)
-
                 judge_prompt_span.update(
                     output={
                         "judge_prompt_path": JUDGE_PROMPT_PATH,
@@ -103,31 +92,30 @@ def run_monitoring_quality():
                 as_type="span",
                 name="load-dataset-sample",
             ) as dataset_span:
-
-                df = pd.read_csv(DATASET_PATH).head(N_EXAMPLES)
-
+                df = pd.read_csv(DATASET_PATH)
+                sample_df = df.head(N_EXAMPLES).copy()
                 dataset_span.update(
                     output={
-                        "num_loaded_examples": len(df),
-                    }
+                        "num_loaded_examples": len(sample_df),
+                    },
+                    metadata={
+                        "dataset_path": DATASET_PATH,
+                    },
                 )
 
             results = []
-
-            for idx, row in df.iterrows():
+            for idx, row in sample_df.iterrows():
                 with root_span.start_as_current_observation(
                     as_type="span",
-                    name=f"example-{idx}",
-                ) as span:
-
+                    name=f"evaluate-example-{idx}",
+                ) as example_span:
                     question = row["instruction"]
-                    expected_answer = row.get("response")
-                    category = row.get("category")
-                    flags = row.get("flags")
+                    expected_answer = row["response"]
+                    category = row["category"]
+                    flags = row["flags"]
 
                     start_time = time.perf_counter()
-
-                    completion = openai.chat.completions.create(
+                    answer_completion = openai.chat.completions.create(
                         model=OPENAI_MODEL,
                         messages=[
                             {"role": "system", "content": answer_prompt},
@@ -135,21 +123,18 @@ def run_monitoring_quality():
                         ],
                         name=f"generate-answer-{idx}",
                     )
-
-                    answer = completion.choices[0].message.content.strip()
-
+                    model_answer = answer_completion.choices[0].message.content.strip()
                     latency_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
-                    usage = getattr(completion, "usage", None)
+                    usage = getattr(answer_completion, "usage", None)
                     input_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
                     output_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
 
-                    judge_input = build_judge_input(
-                        question,
-                        expected_answer,
-                        answer,
+                    judge_input = (
+                        f"Pergunta:\n{question}\n\n"
+                        f"Resposta esperada:\n{expected_answer}\n\n"
+                        f"Resposta gerada:\n{model_answer}"
                     )
-
                     judge_completion = openai.chat.completions.create(
                         model=JUDGE_MODEL,
                         messages=[
@@ -158,22 +143,22 @@ def run_monitoring_quality():
                         ],
                         name=f"judge-answer-{idx}",
                     )
+                    judge_score = judge_completion.choices[0].message.content.strip()
+                    score_value = extract_judge_score(judge_score)
+                    severity = calculate_severity(score_value)
 
-                    judge_raw = judge_completion.choices[0].message.content.strip()
-                    judge_score = judge_raw
-                    severity = "review"
-
-                    span.update(
+                    example_span.update(
                         input={
                             "question": question,
                             "expected_answer": expected_answer,
                         },
                         output={
-                            "answer": answer,
+                            "model_answer": model_answer,
+                            "judge_score": judge_score,
+                            "judge_score_value": score_value,
                             "latency_ms": latency_ms,
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
-                            "judge_score": judge_score,
                         },
                         metadata={
                             "category": category,
@@ -185,7 +170,10 @@ def run_monitoring_quality():
                     results.append(
                         {
                             "question": question,
+                            "expected_answer": expected_answer,
+                            "model_answer": model_answer,
                             "judge_score": judge_score,
+                            "judge_score_value": score_value,
                             "latency_ms": latency_ms,
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
@@ -194,14 +182,29 @@ def run_monitoring_quality():
                             "flags": flags,
                         }
                     )
+                    time.sleep(0.1)
 
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="aggregate-monitoring-quality",
             ) as aggregate_span:
-
-                summary = summarize_monitoring_results(results)
-
+                num_examples = len(results)
+                avg_latency_ms = (
+                    round(
+                        sum(item["latency_ms"] for item in results) / num_examples,
+                        2,
+                    )
+                    if num_examples
+                    else 0
+                )
+                summary = {
+                    "num_examples": num_examples,
+                    "num_judge_answers": num_examples,
+                    "judge_answers_preview": [item["judge_score"] for item in results[:3]],
+                    "avg_latency_ms": avg_latency_ms,
+                    "total_input_tokens": sum(item["input_tokens"] for item in results),
+                    "total_output_tokens": sum(item["output_tokens"] for item in results),
+                }
                 aggregate_span.update(output=summary)
 
             root_span.update(
@@ -211,8 +214,23 @@ def run_monitoring_quality():
                 }
             )
 
-        langfuse.flush()
+    langfuse.flush()
+
+    return {
+        "summary": summary,
+        "results": results,
+    }
 
 
 if __name__ == "__main__":
-    run_monitoring_quality()
+    result = run_monitoring_quality()
+
+    print("\nResumo do monitoramento:\n")
+    print(result["summary"])
+
+    print("\nResultados individuais:\n")
+    for i, item in enumerate(result["results"], start=1):
+        print(f"Exemplo {i}")
+        print("Pergunta:", item["question"])
+        print("Avaliação do juiz:", item["judge_score"])
+        print("-" * 50)

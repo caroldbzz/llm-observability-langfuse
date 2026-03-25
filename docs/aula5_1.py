@@ -1,4 +1,3 @@
-# AULA 5.1
 import time
 import pandas as pd
 from dotenv import load_dotenv
@@ -26,14 +25,6 @@ def load_prompt(path: str) -> str:
         return file.read()
 
 
-def summarize_results(results: list[dict]) -> dict:
-    return {
-        "num_examples": len(results),
-        "num_judge_answers": len(results),
-        "judge_answers_preview": [r["judge_score"] for r in results[:3]],
-    }
-
-
 def run_batch_llm_judge_evaluation():
     with langfuse.start_as_current_observation(
         as_type="span",
@@ -55,7 +46,6 @@ def run_batch_llm_judge_evaluation():
                 },
             )
 
-            # Etapa 1 — carregar prompts
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="load-prompts",
@@ -77,7 +67,6 @@ def run_batch_llm_judge_evaluation():
                     }
                 )
 
-            # Etapa 2 — carregar dataset
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="load-dataset-sample",
@@ -168,7 +157,11 @@ def run_batch_llm_judge_evaluation():
                 name="aggregate-results",
             ) as aggregate_span:
 
-                summary = summarize_results(results)
+                summary = {
+                    "num_examples": len(results),
+                    "num_judge_answers": len(results),
+                    "judge_answers_preview": [r["judge_score"] for r in results[:3]],
+                }
 
                 aggregate_span.update(
                     output=summary
@@ -181,12 +174,12 @@ def run_batch_llm_judge_evaluation():
                 }
             )
 
-        langfuse.flush()
+    langfuse.flush()
 
-        return {
-            "summary": summary,
-            "results": results,
-        }
+    return {
+        "summary": summary,
+        "results": results,
+    }
 
 
 if __name__ == "__main__":
