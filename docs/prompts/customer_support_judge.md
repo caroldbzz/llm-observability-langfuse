@@ -9,19 +9,6 @@ Considere os seguintes critérios:
 4. Aderência — responde corretamente à pergunta?
 5. Tom — está educado e apropriado?
 
----
-
-Pergunta do cliente:
-{{question}}
-
-Resposta esperada (referência):
-{{expected_answer}}
-
-Resposta gerada pelo modelo:
-{{model_answer}}
-
----
-
 Dê uma nota de 1 a 5:
 
 1 = muito ruim  
@@ -32,9 +19,9 @@ Dê uma nota de 1 a 5:
 
 ---
 
-Responda APENAS em JSON no formato:
+Responda APENAS em texto simples, exatamente neste formato:
 
-{
-  "score": <inteiro de 1 a 5>,
-  "reason": "<justificativa curta>"
-}
+SCORE: <inteiro de 1 a 5>
+REASON: <justificativa curta>
+
+Os dados da avaliação (pergunta, resposta esperada e resposta gerada) serão enviados na mensagem do usuário.

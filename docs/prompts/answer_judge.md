@@ -13,14 +13,8 @@ Dê uma nota de 1 a 5, onde:
 4 = boa
 5 = excelente
 
-Responda apenas em JSON no formato:
-{"score": <nota>, "reason": "<justificativa curta>"}
+Responda em texto simples, exatamente neste formato:
+SCORE: <nota de 1 a 5>
+REASON: <justificativa curta>
 
-Pergunta:
-{{question}}
-
-Resposta esperada:
-{{expected_answer}}
-
-Resposta gerada:
-{{model_answer}}
+Os dados da avaliação (pergunta, resposta esperada e resposta gerada) serão enviados na mensagem do usuário.

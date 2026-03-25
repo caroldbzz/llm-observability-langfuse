@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import pandas as pd
 from dotenv import load_dotenv
@@ -10,89 +9,45 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
 JUDGE_MODEL = "gpt-4o-mini"
 
-DATASET_PATH = "../data/bitext_customer_support.csv"
-ANSWER_PROMPT_NAME = "customer-support-assistant"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
+ANSWER_PROMPT_NAME = "customer_support_assistant"
 ANSWER_PROMPT_LABEL = "production"
-JUDGE_PROMPT_PATH = "prompts/answer_judge.md"
+JUDGE_PROMPT_PATH = "docs/prompts/answer_judge.md"
 
 N_EXAMPLES = 5
 
 
 def load_prompt(path: str) -> str:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Prompt file not found: {path}")
     with open(path, "r", encoding="utf-8") as file:
         return file.read()
 
 
-def build_prompt(template: str, variables: dict) -> str:
-    prompt = template
-    for key, value in variables.items():
-        prompt = prompt.replace(f"{{{{{key}}}}}", str(value))
-    return prompt
-
-
-def parse_judge_response(raw_response: str) -> dict:
-    try:
-        parsed = json.loads(raw_response)
-        score = parsed.get("score")
-        reason = parsed.get("reason")
-        return {
-            "score": int(score) if score is not None else None,
-            "reason": reason,
-        }
-    except Exception:
-        return {
-            "score": None,
-            "reason": raw_response,
-        }
-
-
-def summarize_results(results: list[dict]) -> dict:
-    valid_scores = [r["judge_score"] for r in results if r["judge_score"] is not None]
-
-    if valid_scores:
-        average_score = round(sum(valid_scores) / len(valid_scores), 2)
-    else:
-        average_score = None
-
-    distribution = {}
-    for score in valid_scores:
-        distribution[str(score)] = distribution.get(str(score), 0) + 1
-
-    return {
-        "num_examples": len(results),
-        "num_valid_scores": len(valid_scores),
-        "average_score": average_score,
-        "score_distribution": distribution,
-    }
-
-
-def run_batch_llm_judge_evaluation():
+def run_batch_llm_judge_evaluation(N_EXAMPLES: int = N_EXAMPLES):
     with langfuse.start_as_current_observation(
         as_type="span",
         name="batch-llm-judge-evaluation",
     ) as root_span:
 
-        with propagate_attributes(session_id="evaluation-session-004"):
+        with propagate_attributes(
+            session_id="evaluation-session-004",
+            user_id="demo-user-alura",
+            tags=["llm-as-judge-batch", OPENAI_MODEL, JUDGE_MODEL],
+            metadata={
+                "dataset": DATASET_PATH,
+                "evaluation_type": "batch-open-answer-judge",
+                "judge_prompt_path": JUDGE_PROMPT_PATH,
+                "answer_prompt_name": ANSWER_PROMPT_NAME,
+                "answer_prompt_label": ANSWER_PROMPT_LABEL,
+                "num_examples": str(N_EXAMPLES),
+            },
+        ):
 
-            root_span.update(
-                user_id="demo-user-alura",
-                tags=["llm-as-judge-batch", OPENAI_MODEL, JUDGE_MODEL],
-                metadata={
-                    "dataset": DATASET_PATH,
-                    "evaluation_type": "batch-open-answer-judge",
-                    "judge_prompt_path": JUDGE_PROMPT_PATH,
-                    "answer_prompt_name": ANSWER_PROMPT_NAME,
-                    "answer_prompt_label": ANSWER_PROMPT_LABEL,
-                    "num_examples": N_EXAMPLES,
-                },
-            )
-
-            # Etapa 1 — carregar prompts
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="load-prompts",
@@ -114,7 +69,6 @@ def run_batch_llm_judge_evaluation():
                     }
                 )
 
-            # Etapa 2 — carregar dataset
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="load-dataset-sample",
@@ -134,7 +88,6 @@ def run_batch_llm_judge_evaluation():
 
             results = []
 
-            # Etapa 3 — avaliação em lote
             for idx, row in sample_df.iterrows():
                 with root_span.start_as_current_observation(
                     as_type="span",
@@ -146,7 +99,6 @@ def run_batch_llm_judge_evaluation():
                     category = row["category"]
                     flags = row["flags"]
 
-                    # Geração da resposta da aplicação
                     answer_completion = openai.chat.completions.create(
                         model=OPENAI_MODEL,
                         messages=[
@@ -158,38 +110,29 @@ def run_batch_llm_judge_evaluation():
 
                     model_answer = answer_completion.choices[0].message.content.strip()
 
-                    # Prompt do juiz
-                    final_judge_prompt = build_prompt(
-                        judge_template,
-                        {
-                            "question": question,
-                            "expected_answer": expected_answer,
-                            "model_answer": model_answer,
-                        },
+                    judge_input = (
+                        f"Pergunta:\n{question}\n\n"
+                        f"Resposta esperada:\n{expected_answer}\n\n"
+                        f"Resposta gerada:\n{model_answer}"
                     )
 
-                    # Avaliação com LLM-as-Judge
                     judge_completion = openai.chat.completions.create(
                         model=JUDGE_MODEL,
                         messages=[
-                            {
-                                "role": "system",
-                                "content": "Você é um avaliador de respostas de atendimento ao cliente.",
-                            },
-                            {"role": "user", "content": final_judge_prompt},
+                            {"role": "system", "content": judge_template},
+                            {"role": "user", "content": judge_input},
                         ],
                         name=f"judge-answer-{idx}",
                     )
 
                     raw_judge_response = judge_completion.choices[0].message.content.strip()
-                    judge_result = parse_judge_response(raw_judge_response)
+                    judge_score = raw_judge_response
 
                     example_result = {
                         "question": question,
                         "expected_answer": expected_answer,
                         "model_answer": model_answer,
-                        "judge_score": judge_result["score"],
-                        "judge_reason": judge_result["reason"],
+                        "judge_score": judge_score,
                         "category": category,
                         "flags": flags,
                     }
@@ -201,8 +144,7 @@ def run_batch_llm_judge_evaluation():
                         },
                         output={
                             "model_answer": model_answer,
-                            "judge_score": judge_result["score"],
-                            "judge_reason": judge_result["reason"],
+                            "judge_score": judge_score,
                         },
                         metadata={
                             "category": category,
@@ -213,13 +155,17 @@ def run_batch_llm_judge_evaluation():
                     results.append(example_result)
                     time.sleep(0.1)
 
-            # Etapa 4 — agregação
+
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="aggregate-results",
             ) as aggregate_span:
 
-                summary = summarize_results(results)
+                summary = {
+                    "num_examples": len(results),
+                    "num_judge_answers": len(results),
+                    "judge_answers_preview": [r["judge_score"] for r in results[:3]],
+                }
 
                 aggregate_span.update(
                     output=summary
@@ -232,12 +178,12 @@ def run_batch_llm_judge_evaluation():
                 }
             )
 
-        langfuse.flush()
+    langfuse.flush()
 
-        return {
-            "summary": summary,
-            "results": results,
-        }
+    return {
+        "summary": summary,
+        "results": results,
+    }
 
 
 if __name__ == "__main__":
@@ -250,6 +196,5 @@ if __name__ == "__main__":
     for i, item in enumerate(result["results"], start=1):
         print(f"Exemplo {i}")
         print("Pergunta:", item["question"])
-        print("Score:", item["judge_score"])
-        print("Justificativa:", item["judge_reason"])
+        print("Avaliação do juiz:", item["judge_score"])
         print("-" * 50)

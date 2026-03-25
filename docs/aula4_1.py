@@ -1,4 +1,3 @@
-import os
 import time
 import pandas as pd
 from dotenv import load_dotenv
@@ -9,23 +8,15 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
-DATASET_PATH = "../data/bitext_customer_support.csv"
-PROMPT_PATH = "prompts/intent_classifier.md"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
+PROMPT_PATH = "docs/prompts/intent_classifier.md"
 
 
 def load_prompt(path: str) -> str:
     with open(path, "r", encoding="utf-8") as file:
         return file.read()
-
-
-def build_prompt(template: str, variables: dict) -> str:
-    prompt = template
-    for key, value in variables.items():
-        prompt = prompt.replace(f"{{{{{key}}}}}", str(value))
-    return prompt
 
 
 def run_intent_evaluation():
@@ -34,17 +25,16 @@ def run_intent_evaluation():
         name="intent-evaluation-pipeline",
     ) as root_span:
 
-        with propagate_attributes(session_id="evaluation-session-002"):
-
-            root_span.update(
-                user_id="demo-user-alura",
-                tags=["intent-evaluation", OPENAI_MODEL],
-                metadata={
-                    "dataset": DATASET_PATH,
-                    "evaluation_type": "intent-classification",
-                    "prompt_path": PROMPT_PATH,
-                },
-            )
+        with propagate_attributes(
+            session_id="evaluation-session-002",
+            user_id="demo-user-alura",
+            tags=["intent-evaluation", OPENAI_MODEL],
+            metadata={
+                "dataset": DATASET_PATH,
+                "evaluation_type": "intent-classification",
+                "prompt_path": PROMPT_PATH,
+            },
+        ):
 
 
             with root_span.start_as_current_observation(
@@ -92,16 +82,11 @@ def run_intent_evaluation():
                 name="predict-intent",
             ) as predict_span:
 
-                final_prompt = build_prompt(
-                    prompt_template,
-                    {"question": question},
-                )
-
                 completion = openai.chat.completions.create(
                     model=OPENAI_MODEL,
                     messages=[
-                        {"role": "system", "content": "Você é um classificador de intenção."},
-                        {"role": "user", "content": final_prompt},
+                        {"role": "system", "content": prompt_template},
+                        {"role": "user", "content": question},
                     ],
                     name="intent-classification",
                 )
@@ -151,14 +136,14 @@ def run_intent_evaluation():
                 },
             )
 
-        langfuse.flush()
+    langfuse.flush()
 
-        return {
-            "question": question,
-            "true_intent": true_intent,
-            "predicted_intent": predicted_intent,
-            "score": score,
-        }
+    return {
+        "question": question,
+        "true_intent": true_intent,
+        "predicted_intent": predicted_intent,
+        "score": score,
+    }
 
 
 if __name__ == "__main__":

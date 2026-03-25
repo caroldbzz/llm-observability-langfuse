@@ -1,4 +1,3 @@
-import os
 import time
 import pandas as pd
 from dotenv import load_dotenv
@@ -9,11 +8,10 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
-DATASET_PATH = "../data/bitext_customer_support.csv"
-PROMPT_NAME = "customer-support-assistant"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
+PROMPT_NAME = "customer_support_assistant"
 PROMPT_LABEL = "production"
 
 
@@ -23,17 +21,16 @@ def run_customer_support_pipeline() -> str:
         name="customer-support-pipeline",
     ) as root_span:
 
-        with propagate_attributes(session_id="chat-session-123"):
-
-            root_span.update(
-                user_id="demo-user-alura",
-                tags=["customer-support", "prompt-versioning", OPENAI_MODEL],
-                metadata={
-                    "environment": "development",
-                    "dataset_source": DATASET_PATH,
-                    "pipeline_version": "v2",
-                },
-            )
+        with propagate_attributes(
+            session_id="chat-session-123",
+            user_id="demo-user-alura",
+            tags=["customer-support", "prompt-versioning", OPENAI_MODEL],
+            metadata={
+                "environment": "development",
+                "dataset_source": DATASET_PATH,
+                "pipeline_version": "v2",
+            },
+        ):
 
             with root_span.start_as_current_observation(
                 as_type="span",
@@ -111,9 +108,9 @@ def run_customer_support_pipeline() -> str:
                 },
             )
 
-        langfuse.flush()
+    langfuse.flush()
 
-        return answer
+    return answer
 
 
 if __name__ == "__main__":

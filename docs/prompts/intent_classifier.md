@@ -30,8 +30,7 @@ Classifique a intenção da pergunta em exatamente uma das opções abaixo:
 - set_up_shipping_address
 - newsletter_subscription
 
-Pergunta:
-{{question}}
+A pergunta do cliente será enviada na mensagem do usuário.
 
 Regras:
 - Responda apenas com o nome da intent

@@ -1,6 +1,5 @@
-import os
+# AULA 5.2 
 import time
-import json
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -10,18 +9,13 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
 JUDGE_MODEL = "gpt-4o-mini"
 
 DATASET_PATH = "../data/bitext_customer_support.csv"
-
-# Prompt principal continua no Langfuse
 ANSWER_PROMPT_NAME = "customer_support_assistant"
 ANSWER_PROMPT_LABEL = "production"
-
-# Prompt de judge passa a ser local
 JUDGE_PROMPT_PATH = "./prompts/customer_support_judge.md"
 
 N_EXAMPLES = 5
@@ -32,31 +26,27 @@ def load_prompt(path: str) -> str:
         return f.read()
 
 
-def build_judge_prompt(template: str, question: str, expected_answer: str, model_answer: str) -> str:
+def build_judge_input(question: str, expected_answer: str, model_answer: str) -> str:
     return (
-        template
-        .replace("{{question}}", question)
-        .replace("{{expected_answer}}", str(expected_answer))
-        .replace("{{model_answer}}", model_answer)
+        f"Pergunta:\n{question}\n\n"
+        f"Resposta esperada:\n{expected_answer}\n\n"
+        f"Resposta gerada:\n{model_answer}"
     )
 
 
 def summarize_monitoring_results(results: list[dict]) -> dict:
-    scores = [r["judge_score"] for r in results if r["judge_score"] is not None]
-    low_score_cases = [
-        {
-            "question": r["question"],
-            "judge_score": r["judge_score"],
-            "judge_reason": r["judge_reason"],
-        }
-        for r in results
-        if r["judge_score"] is not None and r["judge_score"] <= 2
-    ]
+    latencies = [r["latency_ms"] for r in results]
 
     return {
         "num_examples": len(results),
-        "avg_score": round(sum(scores) / len(scores), 2) if scores else None,
-        "low_score_cases": low_score_cases[:3],
+        "avg_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else None,
+        "judge_answers_preview": [
+            {
+                "question": r["question"],
+                "judge_score": r["judge_score"],
+            }
+            for r in results[:3]
+        ],
     }
 
 
@@ -79,7 +69,6 @@ def run_monitoring_quality():
                 },
             )
 
-            # Etapa 1 — carregar prompt principal do Langfuse
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="load-application-prompt",
@@ -97,7 +86,6 @@ def run_monitoring_quality():
                     }
                 )
 
-            # Etapa 2 — carregar prompt de judge local
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="load-judge-prompt-local",
@@ -111,7 +99,6 @@ def run_monitoring_quality():
                     }
                 )
 
-            # Etapa 3 — carregar dataset
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="load-dataset-sample",
@@ -127,7 +114,6 @@ def run_monitoring_quality():
 
             results = []
 
-            # Etapa 4 — processar exemplos
             for idx, row in df.iterrows():
                 with root_span.start_as_current_observation(
                     as_type="span",
@@ -158,9 +144,7 @@ def run_monitoring_quality():
                     input_tokens = getattr(usage, "prompt_tokens", 0) if usage else 0
                     output_tokens = getattr(usage, "completion_tokens", 0) if usage else 0
 
-                    # Judge local
-                    judge_prompt = build_judge_prompt(
-                        judge_prompt_template,
+                    judge_input = build_judge_input(
                         question,
                         expected_answer,
                         answer,
@@ -169,35 +153,15 @@ def run_monitoring_quality():
                     judge_completion = openai.chat.completions.create(
                         model=JUDGE_MODEL,
                         messages=[
-                            {"role": "system", "content": "Você é um avaliador de respostas de atendimento ao cliente."},
-                            {"role": "user", "content": judge_prompt},
+                            {"role": "system", "content": judge_prompt_template},
+                            {"role": "user", "content": judge_input},
                         ],
-                        response_format={"type": "json_object"},
                         name=f"judge-answer-{idx}",
                     )
 
                     judge_raw = judge_completion.choices[0].message.content.strip()
-
-                    try:
-                        judge_data = json.loads(judge_raw)
-                        judge_score = int(judge_data.get("score"))
-                        judge_reason = judge_data.get("reason")
-                    except Exception:
-                        judge_score = None
-                        judge_reason = judge_raw
-
-                    severity = "critical" if judge_score is not None and judge_score <= 2 else "ok"
-
-                    if severity == "critical":
-                        with span.start_as_current_observation(
-                            as_type="event",
-                            name="low-quality-detected",
-                            input={
-                                "judge_score": judge_score,
-                                "judge_reason": judge_reason,
-                            },
-                        ):
-                            pass
+                    judge_score = judge_raw
+                    severity = "review"
 
                     span.update(
                         input={
@@ -210,7 +174,6 @@ def run_monitoring_quality():
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
                             "judge_score": judge_score,
-                            "judge_reason": judge_reason,
                         },
                         metadata={
                             "category": category,
@@ -223,7 +186,6 @@ def run_monitoring_quality():
                         {
                             "question": question,
                             "judge_score": judge_score,
-                            "judge_reason": judge_reason,
                             "latency_ms": latency_ms,
                             "input_tokens": input_tokens,
                             "output_tokens": output_tokens,
@@ -233,7 +195,6 @@ def run_monitoring_quality():
                         }
                     )
 
-            # Etapa 5 — consolidação
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="aggregate-monitoring-quality",

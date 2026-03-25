@@ -1,4 +1,3 @@
-import os
 import time
 import pandas as pd
 from dotenv import load_dotenv
@@ -9,14 +8,13 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
-DATASET_PATH = "../data/bitext_customer_support.csv"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
 
 PROMPT_FILES = {
-    "baseline": "prompts/customer_support_baseline.md",
-    "improved": "prompts/customer_support_improved.md",
+    "baseline": "docs/prompts/customer_support_baseline.md",
+    "improved": "docs/prompts/customer_support_improved.md",
 }
 
 
@@ -25,30 +23,22 @@ def load_prompt(path: str) -> str:
         return file.read()
 
 
-def build_prompt(template: str, variables: dict) -> str:
-    prompt = template
-    for key, value in variables.items():
-        prompt = prompt.replace(f"{{{{{key}}}}}", str(value))
-    return prompt
-
-
 def run_file_prompt_experiment():
     with langfuse.start_as_current_observation(
         as_type="span",
         name="file-based-prompt-experiment",
     ) as root_span:
 
-        with propagate_attributes(session_id="prompt-file-session-001"):
-
-            root_span.update(
-                user_id="demo-user-alura",
-                tags=["prompt-files", "prompt-experiment", OPENAI_MODEL],
-                metadata={
-                    "dataset_source": DATASET_PATH,
-                    "experiment_type": "file-based-prompts",
-                    "pipeline_version": "v1",
-                },
-            )
+        with propagate_attributes(
+            session_id="prompt-file-session-001",
+            user_id="demo-user-alura",
+            tags=["prompt-files", "prompt-experiment", OPENAI_MODEL],
+            metadata={
+                "dataset_source": DATASET_PATH,
+                "experiment_type": "file-based-prompts",
+                "pipeline_version": "v1",
+            },
+        ):
 
             with root_span.start_as_current_observation(
                 as_type="span",
@@ -86,11 +76,7 @@ def run_file_prompt_experiment():
                     name=f"run-{label}",
                 ) as experiment_span:
 
-                    prompt_template = load_prompt(prompt_path)
-                    final_prompt = build_prompt(
-                        prompt_template,
-                        {"question": question},
-                    )
+                    system_prompt = load_prompt(prompt_path)
 
                     experiment_span.update(
                         input={
@@ -100,18 +86,15 @@ def run_file_prompt_experiment():
                             "prompt_source": "file",
                             "prompt_label": label,
                             "prompt_path": prompt_path,
-                            "prompt_template_preview": prompt_template[:250],
+                            "prompt_template_preview": system_prompt[:250],
                         },
                     )
 
                     completion = openai.chat.completions.create(
                         model=OPENAI_MODEL,
                         messages=[
-                            {
-                                "role": "system",
-                                "content": "Você é um assistente de atendimento ao cliente.",
-                            },
-                            {"role": "user", "content": final_prompt},
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": question},
                         ],
                         name=f"llm-generation-{label}",
                     )
@@ -145,13 +128,13 @@ def run_file_prompt_experiment():
                 },
             )
 
-        langfuse.flush()
+    langfuse.flush()
 
-        return {
-            "question": question,
-            "expected_answer": expected_answer,
-            "results": results,
-        }
+    return {
+        "question": question,
+        "expected_answer": expected_answer,
+        "results": results,
+    }
 
 
 if __name__ == "__main__":

@@ -1,4 +1,3 @@
-import os
 import time
 import pandas as pd
 from dotenv import load_dotenv
@@ -9,10 +8,9 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
-DATASET_PATH = "../data/bitext_customer_support.csv"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
 
 
 def run_customer_support_pipeline() -> str:
@@ -35,7 +33,12 @@ def run_customer_support_pipeline() -> str:
             )
 
             time.sleep(0.2)
-
+        
+        with root_span.start_as_current_observation(
+            as_type="event",
+            name="dataset-loaded",):
+            pass
+        
         with root_span.start_as_current_observation(
             as_type="span",
             name="text-preprocessing",
@@ -73,9 +76,9 @@ def run_customer_support_pipeline() -> str:
             output={"answer": answer},
         )
 
-        langfuse.flush()
+    langfuse.flush()
 
-        return answer
+    return answer
 
 
 if __name__ == "__main__":

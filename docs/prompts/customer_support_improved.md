@@ -8,6 +8,3 @@ Siga estas regras ao responder:
 - Evite respostas vagas ou genéricas
 
 Se a pergunta não estiver clara, peça esclarecimentos de forma educada.
-
-Pergunta do cliente:
-{{question}}

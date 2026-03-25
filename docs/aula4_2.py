@@ -1,7 +1,5 @@
 import os
-import json
 import time
-from pathlib import Path
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -11,46 +9,21 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
-JUDGE_MODEL = "gpt-4o-mini"
+JUDGE_MODEL = "gpt-4.1-mini"
 
-BASE_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = BASE_DIR.parent
-DATASET_PATH = PROJECT_ROOT / "data" / "bitext_customer_support.csv"
-ANSWER_PROMPT_NAME = "customer-support-assistant"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
+ANSWER_PROMPT_NAME = "customer_support_assistant"
 ANSWER_PROMPT_LABEL = "production"
-JUDGE_PROMPT_PATH = BASE_DIR / "prompts" / "answer_judge.md"
+JUDGE_PROMPT_PATH = "docs/prompts/answer_judge.md"
 
 
-def load_prompt(path: str | Path) -> str:
-    prompt_path = Path(path)
-    if not prompt_path.exists():
-        raise FileNotFoundError(f"Prompt file not found: {prompt_path}")
-    return prompt_path.read_text(encoding="utf-8")
-
-
-def build_prompt(template: str, variables: dict) -> str:
-    prompt = template
-    for key, value in variables.items():
-        prompt = prompt.replace(f"{{{{{key}}}}}", str(value))
-    return prompt
-
-
-def parse_judge_response(raw_response: str) -> dict:
-    try:
-        parsed = json.loads(raw_response)
-        return {
-            "score": parsed.get("score"),
-            "reason": parsed.get("reason"),
-        }
-    except Exception:
-        return {
-            "score": None,
-            "reason": raw_response,
-        }
-
+def load_prompt(path: str) -> str:
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Prompt file not found: {path}")
+    with open(path, "r", encoding="utf-8") as file:
+        return file.read()
 
 def run_llm_judge_evaluation():
     with langfuse.start_as_current_observation(
@@ -58,19 +31,18 @@ def run_llm_judge_evaluation():
         name="llm-judge-evaluation-pipeline",
     ) as root_span:
 
-        with propagate_attributes(session_id="evaluation-session-003"):
-
-            root_span.update(
-                user_id="demo-user-alura",
-                tags=["llm-as-judge", OPENAI_MODEL, JUDGE_MODEL],
-                metadata={
-                    "dataset": DATASET_PATH,
-                    "evaluation_type": "open-answer-judge",
-                    "judge_prompt_path": JUDGE_PROMPT_PATH,
-                    "answer_prompt_name": ANSWER_PROMPT_NAME,
-                    "answer_prompt_label": ANSWER_PROMPT_LABEL,
-                },
-            )
+        with propagate_attributes(
+            session_id="evaluation-session-003",
+            user_id="demo-user-alura",
+            tags=["llm-as-judge", OPENAI_MODEL, JUDGE_MODEL],
+            metadata={
+                "dataset": DATASET_PATH,
+                "evaluation_type": "open-answer-judge",
+                "judge_prompt_path": JUDGE_PROMPT_PATH,
+                "answer_prompt_name": ANSWER_PROMPT_NAME,
+                "answer_prompt_label": ANSWER_PROMPT_LABEL,
+            },
+        ):
 
             with root_span.start_as_current_observation(
                 as_type="span",
@@ -159,26 +131,23 @@ def run_llm_judge_evaluation():
                 name="judge-answer",
             ) as judge_span:
 
-                final_judge_prompt = build_prompt(
-                    judge_template,
-                    {
-                        "question": question,
-                        "expected_answer": expected_answer,
-                        "model_answer": model_answer,
-                    },
+                judge_input = (
+                    f"Pergunta:\n{question}\n\n"
+                    f"Resposta esperada:\n{expected_answer}\n\n"
+                    f"Resposta gerada:\n{model_answer}"
                 )
 
                 judge_completion = openai.chat.completions.create(
                     model=JUDGE_MODEL,
                     messages=[
-                        {"role": "system", "content": "Você é um avaliador de respostas de atendimento ao cliente."},
-                        {"role": "user", "content": final_judge_prompt},
+                        {"role": "system", "content": judge_template},
+                        {"role": "user", "content": judge_input},
                     ],
                     name="llm-answer-judge",
                 )
 
                 raw_judge_response = judge_completion.choices[0].message.content.strip()
-                judge_result = parse_judge_response(raw_judge_response)
+                judge_score = raw_judge_response
 
                 judge_span.update(
                     input={
@@ -187,9 +156,7 @@ def run_llm_judge_evaluation():
                         "model_answer": model_answer,
                     },
                     output={
-                        "judge_score": judge_result["score"],
-                        "judge_reason": judge_result["reason"],
-                        "raw_judge_response": raw_judge_response,
+                        "judge_score": judge_score,
                     },
                     metadata={
                         "judge_prompt_path": JUDGE_PROMPT_PATH,
@@ -203,8 +170,7 @@ def run_llm_judge_evaluation():
                 output={
                     "expected_answer": expected_answer,
                     "model_answer": model_answer,
-                    "judge_score": judge_result["score"],
-                    "judge_reason": judge_result["reason"],
+                    "judge_score": judge_score,
                 },
                 metadata={
                     "category": category,
@@ -212,15 +178,14 @@ def run_llm_judge_evaluation():
                 },
             )
 
-        langfuse.flush()
+    langfuse.flush()
 
-        return {
-            "question": question,
-            "expected_answer": expected_answer,
-            "model_answer": model_answer,
-            "judge_score": judge_result["score"],
-            "judge_reason": judge_result["reason"],
-        }
+    return {
+        "question": question,
+        "expected_answer": expected_answer,
+        "model_answer": model_answer,
+        "judge_score": judge_score,
+    }
 
 
 if __name__ == "__main__":
@@ -237,6 +202,3 @@ if __name__ == "__main__":
 
     print("\nScore do juiz:\n")
     print(result["judge_score"])
-
-    print("\nJustificativa do juiz:\n")
-    print(result["judge_reason"])

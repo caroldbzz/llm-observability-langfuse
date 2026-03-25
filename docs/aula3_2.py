@@ -1,4 +1,3 @@
-import os
 import time
 import pandas as pd
 from dotenv import load_dotenv
@@ -9,11 +8,10 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
-DATASET_PATH = "../data/bitext_customer_support.csv"
-PROMPT_NAME = "customer-support-assistant"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
+PROMPT_NAME = "customer_support_assistant"
 
 PROMPT_LABELS = ["baseline", "improved"]
 
@@ -24,24 +22,36 @@ def run_prompt_experiment():
         name="prompt-experiment",
     ) as root_span:
 
-        with propagate_attributes(session_id="experiment-session-001"):
+        with propagate_attributes(
+            session_id="experiment-session-001",
+            user_id="demo-user-alura",
+            tags=["prompt-experiment", OPENAI_MODEL],
+            metadata={
+                "environment": "development",
+                "dataset_source": DATASET_PATH,
+                "experiment": "prompt-comparison",
+            },
+        ):
 
-            root_span.update(
-                user_id="demo-user-alura",
-                tags=["prompt-experiment", OPENAI_MODEL],
-                metadata={
-                    "experiment": "prompt-comparison",
-                    "dataset": DATASET_PATH,
-                },
-            )
+            with root_span.start_as_current_observation(
+                as_type="span",
+                name="load-dataset-example",
+            ) as dataset_span:
+                df = pd.read_csv(DATASET_PATH)
+                row = df.iloc[4]
+                question = row["instruction"]
 
-            df = pd.read_csv(DATASET_PATH)
-            question = df.iloc[4]["instruction"]
+                dataset_span.update(
+                    output={"question": question},
+                    metadata={
+                        "dataset_path": DATASET_PATH,
+                        "row_index": 4,
+                    },
+                )
 
             results = []
 
             for label in PROMPT_LABELS:
-
                 with root_span.start_as_current_observation(
                     as_type="span",
                     name=f"run-{label}",
@@ -85,9 +95,9 @@ def run_prompt_experiment():
                 output={"comparison": results}
             )
 
-        langfuse.flush()
+    langfuse.flush()
 
-        return results
+    return results
 
 
 if __name__ == "__main__":

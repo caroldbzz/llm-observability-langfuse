@@ -1,4 +1,3 @@
-import os
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -8,10 +7,9 @@ from langfuse.openai import openai
 load_dotenv()
 
 langfuse = get_client()
-openai.api_key = os.getenv("OPENAI_API_KEY")
 
 OPENAI_MODEL = "gpt-4o-mini"
-DATASET_PATH = "../data/bitext_customer_support.csv"
+DATASET_PATH = "docs/data/bitext_customer_support.csv"
 
 
 def get_customer_question() -> str:
@@ -47,11 +45,15 @@ def ask_llm(question: str) -> str:
 
         answer = completion.choices[0].message.content
 
-        root_span.update(output={"answer": answer})
+        root_span.update(
+            input={"question": question},
+            output={"answer": answer},
+            )
 
-        langfuse.flush()
 
-        return answer
+    langfuse.flush()
+
+    return answer
 
 
 if __name__ == "__main__":
