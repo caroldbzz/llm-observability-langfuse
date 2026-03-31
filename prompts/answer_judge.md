@@ -1,10 +1,11 @@
 Avalie a resposta gerada para a pergunta do usuário.
 
-Considere:
-- correção
-- clareza
-- utilidade
-- aderência à resposta esperada
+Considere os seguintes critérios:
+1. Clareza — a resposta é fácil de entender?
+2. Objetividade — vai direto ao ponto?
+3. Utilidade — resolve ou ajuda a resolver o problema?
+4. Aderência — responde corretamente à pergunta?
+5. Tom — está educado e apropriado?
 
 Dê uma nota de 1 a 5, onde:
 1 = muito ruim

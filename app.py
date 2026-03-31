@@ -1,80 +1,183 @@
 import time
 import pandas as pd
 from dotenv import load_dotenv
-from langfuse import get_client
+
+from langfuse import get_client, propagate_attributes
 from langfuse.openai import openai
 
 load_dotenv()
 
 langfuse = get_client()
 
-DATASET_PATH = "docs/data/bitext_customer_support.csv"
 OPENAI_MODEL = "gpt-4o-mini"
+JUDGE_MODEL = "gpt-4.1-mini"
 
-def get_customer_question():
-    df = pd.read_csv(DATASET_PATH)
-    question = df.iloc[0]["instruction"]
-    return question 
+DATASET_PATH = "data/bitext_customer_support.csv"
+ANSWER_PROMPT_NAME = "customer_support_assistant"
+ANSWER_PROMPT_LABEL = "production"
+JUDGE_PROMPT_PATH = "prompts/answer_judge.md"
 
-def run_customer_support_pipeline():
+N_EXAMPLES = 5
+
+
+def load_prompt(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as file:
+        return file.read()
+
+
+def run_batch_llm_judge_evaluation():
     with langfuse.start_as_current_observation(
         as_type="span",
-        name="customer-support-pipeline"
+        name="batch-llm-judge-evaluation",
     ) as root_span:
-        
-        with root_span.start_as_current_observation(
-            as_type="span",
-            name = "load_dataset",
-        ) as dataset_span:
-            
-            question = get_customer_question()
-            dataset_span.update(input={"dataset_path": DATASET_PATH},
-                output={"selected_question": question})
-        
 
-        time.sleep(0.2)
+        with propagate_attributes(session_id="evaluation-session-004"):
+            root_span.update(
+                user_id="demo-user-alura",
+                tags=["llm-as-judge-batch", OPENAI_MODEL, JUDGE_MODEL],
+                metadata={
+                    "dataset": DATASET_PATH,
+                    "evaluation_type": "batch-open-answer-judge",
+                    "judge_prompt_path": JUDGE_PROMPT_PATH,
+                    "answer_prompt_name": ANSWER_PROMPT_NAME,
+                    "answer_prompt_label": ANSWER_PROMPT_LABEL,
+                    "num_examples": N_EXAMPLES,
+                },
+            )
 
-        with root_span.start_as_current_observation(
-            as_type="event",
-            name="dataset-loaded",
-        ):
-            pass
+            with root_span.start_as_current_observation(
+                as_type="span",
+                name="load-prompts",
+            ) as prompt_span:
+                answer_prompt_client = langfuse.get_prompt(
+                    name=ANSWER_PROMPT_NAME,
+                    label=ANSWER_PROMPT_LABEL,
+                )
+                answer_system_prompt = answer_prompt_client.prompt
+                judge_template = load_prompt(JUDGE_PROMPT_PATH)
 
-        with root_span.start_as_current_observation(
-            as_type="span",
-            name="text-preprocessing",
-        ) as preprocess_span:
-            
-            cleaned_question = question.strip()
-            preprocess_span.update(
-            input={"raw_question": question},
-            output={"cleaned_question": cleaned_question},
-            metadata={
-                "char_count": len(cleaned_question),
-                "is_empty": len(cleaned_question) == 0,
-            },)
-            time.sleep(0.1)
+                prompt_span.update(
+                    output={
+                        "answer_prompt_name": ANSWER_PROMPT_NAME,
+                        "answer_prompt_label": ANSWER_PROMPT_LABEL,
+                        "judge_prompt_path": JUDGE_PROMPT_PATH,
+                    }
+                )
 
-       
-        completion = openai.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "Você é um assistente de atendimento ao cliente. Responda de forma objetiva e educada."},
-                {"role": "user", "content": cleaned_question},
-            ],
-            name="llm-generation",
-        )
+            with root_span.start_as_current_observation(
+                as_type="span",
+                name="load-dataset-sample",
+            ) as dataset_span:
+                df = pd.read_csv(DATASET_PATH)
+                sample_df = df.head(N_EXAMPLES).copy()
 
-        answer = completion.choices[0].message.content  
-        root_span.update(input={"question": cleaned_question},
-            output={"answer": answer,})
-    
+                dataset_span.update(
+                    output={"num_loaded_examples": len(sample_df)},
+                    metadata={"dataset_path": DATASET_PATH},
+                )
+
+            results = []
+            for idx, row in sample_df.iterrows():
+                with root_span.start_as_current_observation(
+                    as_type="span",
+                    name=f"evaluate-example-{idx}",
+                ) as example_span:
+                    question = row["instruction"]
+                    expected_answer = row["response"]
+                    category = row["category"]
+                    flags = row["flags"]
+
+                    answer_completion = openai.chat.completions.create(
+                        model=OPENAI_MODEL,
+                        messages=[
+                            {"role": "system", "content": answer_system_prompt},
+                            {"role": "user", "content": question},
+                        ],
+                        name=f"generate-answer-{idx}",
+                    )
+
+                    model_answer = answer_completion.choices[0].message.content.strip()
+
+                    judge_input = (
+                        f"Pergunta:\n{question}\n\n"
+                        f"Resposta esperada:\n{expected_answer}\n\n"
+                        f"Resposta gerada:\n{model_answer}"
+                    )
+
+                    judge_completion = openai.chat.completions.create(
+                        model=JUDGE_MODEL,
+                        messages=[
+                            {"role": "system", "content": judge_template},
+                            {"role": "user", "content": judge_input},
+                        ],
+                        name=f"judge-answer-{idx}",
+                    )
+
+                    judge_score = judge_completion.choices[0].message.content.strip()
+
+                    example_result = {
+                        "question": question,
+                        "expected_answer": expected_answer,
+                        "model_answer": model_answer,
+                        "judge_score": judge_score,
+                        "category": category,
+                        "flags": flags,
+                    }
+
+                    example_span.update(
+                        input={
+                            "question": question,
+                            "expected_answer": expected_answer,
+                        },
+                        output={
+                            "model_answer": model_answer,
+                            "judge_score": judge_score,
+                        },
+                        metadata={
+                            "category": category,
+                            "flags": flags,
+                        },
+                    )
+
+                    results.append(example_result)
+                    time.sleep(0.1)
+
+            with root_span.start_as_current_observation(
+                as_type="span",
+                name="aggregate-results",
+            ) as aggregate_span:
+                summary = {
+                    "num_examples": len(results),
+                    "num_judge_answers": len(results),
+                    "judge_answers_preview": [r["judge_score"] for r in results[:3]],
+                }
+
+                aggregate_span.update(output=summary)
+
+            root_span.update(
+                output={
+                    "summary": summary,
+                    "results": results,
+                }
+            )
+
     langfuse.flush()
 
-    return answer
+    return {
+        "summary": summary,
+        "results": results,
+    }
 
 
 if __name__ == "__main__":
-   resposta = run_customer_support_pipeline()
-   print("Resposta do Suporte: ")
-   print(resposta)
+    result = run_batch_llm_judge_evaluation()
+
+    print("\nResumo da avaliação:\n")
+    print(result["summary"])
+
+    print("\nResultados individuais:\n")
+    for i, item in enumerate(result["results"], start=1):
+        print(f"Exemplo {i}")
+        print("Pergunta:", item["question"])
+        print("Avaliação do juiz:", item["judge_score"])
+        print("-" * 50)

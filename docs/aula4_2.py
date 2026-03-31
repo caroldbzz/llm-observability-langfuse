@@ -1,75 +1,95 @@
-import os
-import time
 import pandas as pd
 from dotenv import load_dotenv
+from langfuse import get_client
 
-from langfuse import get_client, propagate_attributes
+
+from langfuse import propagate_attributes
 from langfuse.openai import openai
+
 
 load_dotenv()
 
+
 langfuse = get_client()
+
+
+DATASET_PATH = "data/bitext_customer_support.csv"
 
 OPENAI_MODEL = "gpt-4o-mini"
 JUDGE_MODEL = "gpt-4.1-mini"
 
-DATASET_PATH = "docs/data/bitext_customer_support.csv"
+JUDGE_PROMPT_PATH = "prompts/answer_judge.md"
 ANSWER_PROMPT_NAME = "customer_support_assistant"
 ANSWER_PROMPT_LABEL = "production"
-JUDGE_PROMPT_PATH = "docs/prompts/answer_judge.md"
 
 
-def load_prompt(path: str) -> str:
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Prompt file not found: {path}")
+def load_prompt(path):
     with open(path, "r", encoding="utf-8") as file:
         return file.read()
+
+
+def get_customer_question():
+    df = pd.read_csv(DATASET_PATH)
+    row = df.iloc[4]
+    question = row["instruction"]
+    expected_answer = row["response"]
+    category = row["category"]
+
+    return question, expected_answer, category
+
 
 def run_llm_judge_evaluation():
     with langfuse.start_as_current_observation(
         as_type="span",
-        name="llm-judge-evaluation-pipeline",
+        name="llm-judge-evaluation-pipeline"
     ) as root_span:
-
+       
         with propagate_attributes(
-            session_id="evaluation-session-003",
-            user_id="demo-user-alura",
-            tags=["llm-as-judge", OPENAI_MODEL, JUDGE_MODEL],
+            session_id="evaluation-evaluation-123",
+            user_id="id-123",
+            tags=["customer-support", "llm-as-judge", OPENAI_MODEL],
             metadata={
                 "dataset": DATASET_PATH,
                 "evaluation_type": "open-answer-judge",
                 "judge_prompt_path": JUDGE_PROMPT_PATH,
                 "answer_prompt_name": ANSWER_PROMPT_NAME,
                 "answer_prompt_label": ANSWER_PROMPT_LABEL,
-            },
+            }
         ):
+       
+            with root_span.start_as_current_observation(
+                as_type="span",
+                name="load-dataset"
+            ) as dataset_span:
+               
+                question, expected_answer, category = get_customer_question()
+               
+                dataset_span.update(
+                    output={
+                        "selected_question": question,
+                        "expected_answer": expected_answer},
+                    metadata={
+                        "category": category
+                        })
+           
+            with root_span.start_as_current_observation(
+                as_type="event",
+                name="dataset-loaded"
+            ):
+                pass
+
 
             with root_span.start_as_current_observation(
                 as_type="span",
-                name="load-dataset-example",
-            ) as dataset_span:
-
-                df = pd.read_csv(DATASET_PATH)
-                row = df.iloc[0]
-
-                question = row["instruction"]
-                expected_answer = row["response"]
-                category = row["category"]
-                flags = row["flags"]
-
-                dataset_span.update(
-                    output={
-                        "question": question,
-                        "expected_answer": expected_answer,
-                    },
-                    metadata={
-                        "category": category,
-                        "flags": flags,
-                    },
-                )
-
-                time.sleep(0.2)
-
+                name="preprocessing-question"
+            ) as preprocessing_span:
+               
+                cleaned_question = question.strip()
+                preprocessing_span.update(input= {"question": question},
+                output={"cleaned_question": cleaned_question},
+                metadata={"len_question": len(cleaned_question)})
+            
+            
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="get-answer-prompt",
@@ -91,114 +111,89 @@ def run_llm_judge_evaluation():
 
             with root_span.start_as_current_observation(
                 as_type="span",
-                name="generate-answer",
+                name="generate-answer"
             ) as answer_span:
 
                 completion = openai.chat.completions.create(
                     model=OPENAI_MODEL,
                     messages=[
                         {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": question},
+                        {"role": "user", "content": cleaned_question},
                     ],
                     name="customer-support-answer",
                 )
-
-                model_answer = completion.choices[0].message.content.strip()
+        
+                model_answer = completion.choices[0].message.content
 
                 answer_span.update(
-                    input={"question": question},
-                    output={"model_answer": model_answer},
-                )
-
-                time.sleep(0.1)
-
+                    input={"question": cleaned_question,},
+                    output={"model_answer": model_answer})
+        
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="load-judge-prompt",
             ) as judge_prompt_span:
-
-                judge_template = load_prompt(JUDGE_PROMPT_PATH)
+                
+                judge_prompt = load_prompt(JUDGE_PROMPT_PATH)
 
                 judge_prompt_span.update(
                     output={
                         "judge_prompt_path": JUDGE_PROMPT_PATH,
-                        "judge_prompt_preview": judge_template[:200],
                     }
                 )
-
+            
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="judge-answer",
             ) as judge_span:
-
+                
                 judge_input = (
-                    f"Pergunta:\n{question}\n\n"
-                    f"Resposta esperada:\n{expected_answer}\n\n"
-                    f"Resposta gerada:\n{model_answer}"
+                    f"Pergunta: {cleaned_question}\n\n"
+                    f"Resposta esperada: {expected_answer}\n\n"
+                    f"Resposta do modelo: {model_answer}"
                 )
 
                 judge_completion = openai.chat.completions.create(
                     model=JUDGE_MODEL,
                     messages=[
-                        {"role": "system", "content": judge_template},
+                        {"role": "system", "content": judge_prompt},
                         {"role": "user", "content": judge_input},
                     ],
                     name="llm-answer-judge",
                 )
 
-                raw_judge_response = judge_completion.choices[0].message.content.strip()
-                judge_score = raw_judge_response
+                judge_score = judge_completion.choices[0].message.content
 
                 judge_span.update(
-                    input={
-                        "question": question,
-                        "expected_answer": expected_answer,
-                        "model_answer": model_answer,
-                    },
-                    output={
-                        "judge_score": judge_score,
-                    },
-                    metadata={
-                        "judge_prompt_path": JUDGE_PROMPT_PATH,
-                    },
+                    input={ "question": question,
+                            "expected_answer": expected_answer,
+                            "model_answer": model_answer,},
+                    output={"judge_score": judge_score}
                 )
-
-                time.sleep(0.1)
-
-            root_span.update(
-                input={"question": question},
-                output={
-                    "expected_answer": expected_answer,
-                    "model_answer": model_answer,
-                    "judge_score": judge_score,
-                },
-                metadata={
-                    "category": category,
-                    "flags": flags,
-                },
-            )
-
+               
+        root_span.update(input={"question": cleaned_question},
+                         output={"expected_answer": expected_answer,
+                                 "model_answer": model_answer,
+                                 "judge_score": judge_score},
+                        metadata={
+                            "category": category,
+                        })
+   
     langfuse.flush()
 
-    return {
-        "question": question,
-        "expected_answer": expected_answer,
-        "model_answer": model_answer,
-        "judge_score": judge_score,
-    }
+
+    return {"question": cleaned_question,
+            "expected_answer": expected_answer,
+            "model_answer": model_answer,
+            "judge_score": judge_score}
+
+
 
 
 if __name__ == "__main__":
-    result = run_llm_judge_evaluation()
+    results = run_llm_judge_evaluation()
 
-    print("\nPergunta:\n")
-    print(result["question"])
-
-    print("\nResposta esperada do dataset:\n")
-    print(result["expected_answer"])
-
-    print("\nResposta gerada pelo modelo:\n")
-    print(result["model_answer"])
-
-    print("\nScore do juiz:\n")
-    print(result["judge_score"])
+    print("Pergunta:", results["question"])
+    print("Resposta esperada:", results["expected_answer"])
+    print("Resposta do modelo:", results["model_answer"])
+    print("Score:", results["judge_score"])

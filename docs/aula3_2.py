@@ -1,111 +1,126 @@
-import time
 import pandas as pd
 from dotenv import load_dotenv
+from langfuse import get_client
 
-from langfuse import get_client, propagate_attributes
+
+from langfuse import propagate_attributes
 from langfuse.openai import openai
+
 
 load_dotenv()
 
+
 langfuse = get_client()
 
+
+DATASET_PATH = "data/bitext_customer_support.csv"
 OPENAI_MODEL = "gpt-4o-mini"
-DATASET_PATH = "docs/data/bitext_customer_support.csv"
+PROMPT_LABELS= ["baseline", "improved"]
 PROMPT_NAME = "customer_support_assistant"
 
-PROMPT_LABELS = ["baseline", "improved"]
+
+
+
+def get_customer_question():
+    df = pd.read_csv(DATASET_PATH)
+    question = df.iloc[4]["instruction"]
+
+
+    return question
 
 
 def run_prompt_experiment():
     with langfuse.start_as_current_observation(
         as_type="span",
-        name="prompt-experiment",
+        name="prompt-experiment"
     ) as root_span:
-
+       
         with propagate_attributes(
-            session_id="experiment-session-001",
-            user_id="demo-user-alura",
-            tags=["prompt-experiment", OPENAI_MODEL],
+            session_id="chat-session-123",
+            user_id="id-123",
+            tags=["customer-support", "prompt-experiment", OPENAI_MODEL],
             metadata={
-                "environment": "development",
-                "dataset_source": DATASET_PATH,
-                "experiment": "prompt-comparison",
-            },
+                "environment": "develop",
+                "version": "V1",
+                "dataset_path": DATASET_PATH,
+            }
         ):
+       
+            with root_span.start_as_current_observation(
+                as_type="span",
+                name="load_dataset"
+            ) as dataset_span:
+               
+                question = get_customer_question()
+                dataset_span.update(input= {"dataset_path": DATASET_PATH},
+                output={"selected_question": question})
+           
+            with root_span.start_as_current_observation(
+                as_type="event",
+                name="dataset-loaded"
+            ):
+                pass
+
 
             with root_span.start_as_current_observation(
                 as_type="span",
-                name="load-dataset-example",
-            ) as dataset_span:
-                df = pd.read_csv(DATASET_PATH)
-                row = df.iloc[4]
-                question = row["instruction"]
+                name="preprocessing-question"
+            ) as preprocessing_span:
+               
+                cleaned_question = question.strip()
+                preprocessing_span.update(input= {"question": question},
+                output={"cleaned_question": cleaned_question},
+                metadata={"len_question": len(cleaned_question)})
 
-                dataset_span.update(
-                    output={"question": question},
-                    metadata={
-                        "dataset_path": DATASET_PATH,
-                        "row_index": 4,
-                    },
-                )
 
             results = []
+
 
             for label in PROMPT_LABELS:
                 with root_span.start_as_current_observation(
                     as_type="span",
-                    name=f"run-{label}",
-                ) as experiment_span:
-
+                    name=f"run-{label}"
+                ) as expertiment_span:
+                   
                     prompt_client = langfuse.get_prompt(
                         name=PROMPT_NAME,
-                        label=label,
+                        label=label
                     )
+
 
                     system_prompt = prompt_client.prompt
 
-                    completion = openai.chat.completions.create(
-                        model=OPENAI_MODEL,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": question},
-                        ],
-                        name=f"llm-generation-{label}",
+
+                completion = openai.chat.completions.create(
+                    model=OPENAI_MODEL,
+                    messages=[{"role": "system", "content": system_prompt},
+                            {"role": "user", "content": cleaned_question}],
+                    name=f"llm-generation-{label}"
                     )
+               
+                answer = completion.choices[0].message.content
 
-                    answer = completion.choices[0].message.content
 
-                    experiment_span.update(
-                        input={"question": question},
-                        output={"answer": answer},
-                        metadata={
-                            "prompt_label": label,
-                            "prompt_version": prompt_client.version,
-                        },
-                    )
-
-                    results.append(
-                        {
-                            "label": label,
-                            "answer": answer,
-                        }
-                    )
-
-            root_span.update(
-                output={"comparison": results}
-            )
-
+                expertiment_span.update(
+                    input= {"question": question},
+                    output={"answer": answer},
+                    metadata={"PROMPT_LABEL": label,
+                            "PROMPT_VERSION": prompt_client.version})
+               
+                results.append({"label": label,
+                                "answer": answer})
+               
+    root_span.update(metadata={"comparison": results})
+   
     langfuse.flush()
 
-    return results
+
+    return answer
+
+
 
 
 if __name__ == "__main__":
     results = run_prompt_experiment()
-
-    print("\nResultados do experimento:\n")
-
-    for r in results:
-        print(f"[{r['label']}]")
-        print(r["answer"])
-        print("-" * 40)
+   
+    
