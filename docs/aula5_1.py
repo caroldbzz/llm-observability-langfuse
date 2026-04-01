@@ -1,196 +1,219 @@
-import time
 import pandas as pd
 from dotenv import load_dotenv
+from langfuse import get_client
 
-from langfuse import get_client, propagate_attributes
+
+from langfuse import propagate_attributes
 from langfuse.openai import openai
+
 
 load_dotenv()
 
+
 langfuse = get_client()
 
-OPENAI_MODEL = "gpt-4o-mini"
-JUDGE_MODEL = "gpt-4.1-mini"
 
-DATASET_PATH = "docs/data/bitext_customer_support.csv"
+DATASET_PATH = "data/bitext_customer_support.csv"
+OPENAI_MODEL = "gpt-4o-mini"
+OPENAI_MODEL_JUDGE = "gpt-4.1-mini"
+JUDGE_PROMPT_PATH = "prompts/customer_support_answer_judge.md"
 ANSWER_PROMPT_NAME = "customer_support_assistant"
-ANSWER_PROMPT_LABEL = "production"
-JUDGE_PROMPT_PATH = "docs/prompts/answer_judge.md"
+ANSWER_PROMPT_LABEL ="production"
+
 
 N_EXAMPLES = 5
 
 
-def load_prompt(path: str) -> str:
+
+
+def load_prompt(path):
     with open(path, "r", encoding="utf-8") as file:
         return file.read()
 
 
-def run_batch_llm_judge_evaluation():
+def run_batch_llm_judge_pipeline():
     with langfuse.start_as_current_observation(
         as_type="span",
-        name="batch-llm-judge-evaluation",
+        name="batch-llm-judge-pipeline"
     ) as root_span:
-
-        with propagate_attributes(session_id="evaluation-session-004"):
-
-            root_span.update(
-                user_id="demo-user-alura",
-                tags=["llm-as-judge-batch", OPENAI_MODEL, JUDGE_MODEL],
-                metadata={
-                    "dataset": DATASET_PATH,
-                    "evaluation_type": "batch-open-answer-judge",
-                    "judge_prompt_path": JUDGE_PROMPT_PATH,
-                    "answer_prompt_name": ANSWER_PROMPT_NAME,
-                    "answer_prompt_label": ANSWER_PROMPT_LABEL,
-                    "num_examples": N_EXAMPLES,
-                },
-            )
-
+       
+        with propagate_attributes(
+            session_id="llm-judge-session-123",
+            user_id="id-123",
+            tags=["customer-support", "llm-as-judge-batch"],
+            metadata={
+                "environment": "develop",
+                "version": "V1",
+                "dataset_path": DATASET_PATH,
+                "judge_prompt_path": JUDGE_PROMPT_PATH,
+                "answer_prompt_path": ANSWER_PROMPT_NAME,
+                "answer_prompt_label":ANSWER_PROMPT_LABEL,
+                "num_examples": N_EXAMPLES
+            }
+        ):
+       
             with root_span.start_as_current_observation(
                 as_type="span",
-                name="load-prompts",
-            ) as prompt_span:
-
-                answer_prompt_client = langfuse.get_prompt(
-                    name=ANSWER_PROMPT_NAME,
-                    label=ANSWER_PROMPT_LABEL,
-                )
-                answer_system_prompt = answer_prompt_client.prompt
-
-                judge_template = load_prompt(JUDGE_PROMPT_PATH)
-
-                prompt_span.update(
-                    output={
-                        "answer_prompt_name": ANSWER_PROMPT_NAME,
-                        "answer_prompt_label": ANSWER_PROMPT_LABEL,
-                        "judge_prompt_path": JUDGE_PROMPT_PATH,
-                    }
-                )
-
-            with root_span.start_as_current_observation(
-                as_type="span",
-                name="load-dataset-sample",
+                name="load-dataset"
             ) as dataset_span:
-
+               
                 df = pd.read_csv(DATASET_PATH)
                 sample_df = df.head(N_EXAMPLES).copy()
 
-                dataset_span.update(
-                    output={
-                        "num_loaded_examples": len(sample_df),
-                    },
-                    metadata={
-                        "dataset_path": DATASET_PATH,
-                    },
+
+                dataset_span.update(input={"dataset_path": DATASET_PATH},
+                                    output={"num_samples": N_EXAMPLES,})
+           
+            with root_span.start_as_current_observation(
+                as_type="event",
+                name="dataset-loaded"
+            ):
+                pass
+           
+            with root_span.start_as_current_observation(
+                as_type="span",
+                name="load-prompts"
+            ) as prompt_load_span:
+               
+                judge_prompt = load_prompt(JUDGE_PROMPT_PATH)
+
+
+                prompt_client = langfuse.get_prompt(
+                    name=ANSWER_PROMPT_NAME,
+                    label=ANSWER_PROMPT_LABEL
                 )
 
+
+                answer_system_prompt = prompt_client.prompt
+
+
+                prompt_load_span.update(output={"JUDGE_PROMPT_PATH": JUDGE_PROMPT_PATH,
+                                               "ANSWER_PROMPT_NAME": ANSWER_PROMPT_NAME})
             results = []
             for idx, row in sample_df.iterrows():
                 with root_span.start_as_current_observation(
                     as_type="span",
-                    name=f"evaluate-example-{idx}",
-                ) as example_span:
-
+                    name=f"evaluation-{idx}"
+                ) as evaluation_span:
+                   
                     question = row["instruction"]
                     expected_answer = row["response"]
                     category = row["category"]
-                    flags = row["flags"]
 
-                    answer_completion = openai.chat.completions.create(
+
+                    completion = openai.chat.completions.create(
                         model=OPENAI_MODEL,
-                        messages=[
-                            {"role": "system", "content": answer_system_prompt},
-                            {"role": "user", "content": question},
-                        ],
-                        name=f"generate-answer-{idx}",
+                        messages=[{"role": "system", "content": answer_system_prompt},
+                                {"role": "user", "content": question}],
+                        name=f"generate-answer-{idx}"
                     )
-
-                    model_answer = answer_completion.choices[0].message.content.strip()
-
+                   
+                    model_answer = completion.choices[0].message.content
+                   
                     judge_input = (
-                        f"Pergunta:\n{question}\n\n"
-                        f"Resposta esperada:\n{expected_answer}\n\n"
-                        f"Resposta gerada:\n{model_answer}"
+                        f"Pergunta: {question}/n/n"
+                        f"Resposta esperada: {expected_answer} /n/n"
+                        f"Resposta gerada: {model_answer}"
                     )
 
-                    judge_completion = openai.chat.completions.create(
-                        model=JUDGE_MODEL,
-                        messages=[
-                            {"role": "system", "content": judge_template},
-                            {"role": "user", "content": judge_input},
-                        ],
-                        name=f"judge-answer-{idx}",
+
+                    completion_judge = openai.chat.completions.create(
+                        model=OPENAI_MODEL_JUDGE,
+                        messages=[{"role": "system", "content": judge_prompt},
+                                {"role": "user", "content": judge_input}],
+                        name=f"judge-answer-{idx}"
                     )
 
-                    raw_judge_response = judge_completion.choices[0].message.content.strip()
-                    judge_score = raw_judge_response
 
-                    example_result = {
+                    judge_score = completion_judge.choices[0].message.content
+
+
+                    evaluation_result = {
                         "question": question,
                         "expected_answer": expected_answer,
                         "model_answer": model_answer,
                         "judge_score": judge_score,
-                        "category": category,
-                        "flags": flags,
+                        "category": category
+
+
                     }
 
-                    example_span.update(
-                        input={
-                            "question": question,
-                            "expected_answer": expected_answer,
-                        },
-                        output={
-                            "model_answer": model_answer,
-                            "judge_score": judge_score,
-                        },
-                        metadata={
-                            "category": category,
-                            "flags": flags,
-                        },
-                    )
 
-                    results.append(example_result)
-                    time.sleep(0.1)
+                    evaluation_span.update(input={"question": question,
+                                            "expected_answer": expected_answer},
+                                    output={"model_answer": model_answer,
+                                            "judge_score": judge_score})
+
+
+                    results.append(evaluation_result)
 
             with root_span.start_as_current_observation(
                 as_type="span",
                 name="aggregate-results",
             ) as aggregate_span:
-
+                
                 summary = {
                     "num_examples": len(results),
-                    "num_judge_answers": len(results),
-                    "judge_answers_preview": [r["judge_score"] for r in results[:3]],
+                    "judge_answers_preview": [r["judge_score"] for r in results[:2]],
                 }
 
                 aggregate_span.update(
                     output=summary
                 )
 
-            root_span.update(
-                output={
-                    "summary": summary,
-                    "results": results,
-                }
-            )
+            with root_span.start_as_current_observation(
+                as_type="span",
+                name="analyze-priority-case"
+            ) as review_span:
+                review_cases = []
+                for item in results:
+                    score_str = item.get("judge_score", "")
+                    score_val = float(score_str.split("SCORE:", 1)[1].split()[0])
 
+                    if score_val <= 3:
+                        review_cases.append(item)
+
+                review_span.update(
+                    input={
+                        "total_cases": len(results),
+                        "threshold": 3
+                    },
+                    output={
+                        "review_cases_count": len(review_cases),
+                        "review_cases": review_cases
+                    }
+                )
+                
+        root_span.update(
+                    input={"dataset_path": DATASET_PATH, "num_evaluated_cases": len(results)},
+                    output={
+                        "summary": summary,
+                        "results": results,
+                        "review_cases_count": len(review_cases),
+                        "review_cases": review_cases
+                    }
+                )
+   
     langfuse.flush()
+
 
     return {
         "summary": summary,
         "results": results,
+        "review_cases_count": len(review_cases),
+        "review_cases": review_cases,
     }
 
 
+
 if __name__ == "__main__":
-    result = run_batch_llm_judge_evaluation()
+    batch_result = run_batch_llm_judge_pipeline()
+    review_cases = batch_result["review_cases"]
 
-    print("\nResumo da avaliação:\n")
-    print(result["summary"])
+    print(f"Casos totais: {len(batch_result['results'])}")
+    print(f"Casos para revisão manual (score <= 3): {len(review_cases)}")
+    print("Casos prioritários para revisão manual:")
 
-    print("\nResultados individuais:\n")
-    for i, item in enumerate(result["results"], start=1):
-        print(f"Exemplo {i}")
-        print("Pergunta:", item["question"])
-        print("Avaliação do juiz:", item["judge_score"])
-        print("-" * 50)
+    for item in review_cases:
+        print("Pergunta:", item.get("question"))
+        print("Avaliação do juiz:", item.get("judge_score"))
